@@ -1,6 +1,6 @@
 'use strict';
 
-var KDBush = require('kdbush');
+import KDBush from 'kdbush';
 
 var Lib = require('../../lib');
 var AxisIDs = require('../../plots/cartesian/axis_ids');
