@@ -1,6 +1,6 @@
 'use strict';
 
-var cluster = require('@plotly/point-cluster');
+var KDBush = require('kdbush');
 
 var Lib = require('../../lib');
 var AxisIDs = require('../../plots/cartesian/axis_ids');
@@ -76,7 +76,12 @@ module.exports = function calc(gd, trace) {
     // and it is also
     if(hasTooManyPoints && (xa.type !== 'log' && ya.type !== 'log')) {
         // FIXME: delegate this to webworker
-        stash.tree = cluster(positions);
+        const index = new KDBush(len);
+        for(i = 0; i < len; i++) {
+            index.add(positions[i * 2], positions[i * 2 + 1]);
+        }
+        index.finish();
+        stash.tree = index;
     } else {
         stash.ids = _ids;
     }
