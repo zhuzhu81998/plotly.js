@@ -1,7 +1,7 @@
 {
   "name": "plotly-custom",
-  "version": "3.3.1",
-  "main": "plotly-custom.min.js",
+  "version": "3.3.1-nan-fix",
+  "main": "plotly-custom.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
