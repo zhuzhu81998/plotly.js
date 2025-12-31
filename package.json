@@ -96,7 +96,7 @@
     "has-hover": "^1.0.1",
     "has-passive-events": "^1.0.0",
     "is-mobile": "^4.0.0",
-    "kdbush": "^4.0.2",
+    "kdbush": "file:kdbush",
     "maplibre-gl": "^4.7.1",
     "mouse-change": "^1.4.0",
     "mouse-event-offset": "^3.0.2",
