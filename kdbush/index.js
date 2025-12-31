@@ -158,12 +158,12 @@ export default class KDBush {
             if (x >= minX && x <= maxX && y >= minY && y <= maxY) result.push(ids[m]);
 
             // queue search in halves that intersect the query
-            if (axis === 0 ? minX <= x : minY <= y) {
+            if (axis === 0 ? (!Number.isFinite(x) || minX <= x) : (!Number.isFinite(y) || minY <= y)) {
                 stack.push(left);
                 stack.push(m - 1);
                 stack.push(1 - axis);
             }
-            if (axis === 0 ? maxX >= x : maxY >= y) {
+            if (axis === 0 ? (!Number.isFinite(x) || maxX >= x) : (!Number.isFinite(y) || maxY >= y)) {
                 stack.push(m + 1);
                 stack.push(right);
                 stack.push(1 - axis);
