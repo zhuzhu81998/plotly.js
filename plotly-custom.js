@@ -64650,13 +64650,13 @@ var Plotly = (() => {
             const x = coords[2 * m];
             const y = coords[2 * m + 1];
             if (x >= minX && x <= maxX && y >= minY && y <= maxY) result.push(ids[m]);
-            if (axis === 0 ? (Number.isNaN(x) || minX <= x) : (Number.isNaN(y) || minY <= y)
+            if (axis === 0 ? (!Number.isFinite(x) || minX <= x) : (!Number.isFinite(y) || minY <= y)
             ) {
               stack.push(left);
               stack.push(m - 1);
               stack.push(1 - axis);
             }
-            if (axis === 0 ? (Number.isNaN(x) || maxX >= x) : (Number.isNaN(y) || maxY >= y)) {
+            if (axis === 0 ? (!Number.isFinite(x) || maxX >= x) : (!Number.isFinite(y) || maxY >= y)) {
               stack.push(m + 1);
               stack.push(right);
               stack.push(1 - axis);
