@@ -1,6 +1,6 @@
 /**
 * plotly.js (custom) v3.3.1
-* Copyright 2012-2025, Plotly, Inc.
+* Copyright 2012-2026, Plotly, Inc.
 * All rights reserved.
 * Licensed under the MIT license
 */
@@ -8605,10 +8605,10 @@ var Plotly = (() => {
         f4: typeof Float32Array === "undefined" ? void 0 : Float32Array,
         f8: typeof Float64Array === "undefined" ? void 0 : Float64Array
         /* TODO: potentially add Big Int
-
+        
             i8: typeof BigInt64Array === 'undefined' ? undefined :
                        BigInt64Array,
-
+        
             u8: typeof BigUint64Array === 'undefined' ? undefined :
                        BigUint64Array,
             */
@@ -48236,6 +48236,252 @@ var Plotly = (() => {
     }
   });
 
+  // kdbush/index.js
+  function sort(ids, coords, nodeSize, left, right, axis) {
+    if (right - left <= nodeSize) return;
+    const m = left + right >> 1;
+    select(ids, coords, m, left, right, axis);
+    sort(ids, coords, nodeSize, left, m - 1, 1 - axis);
+    sort(ids, coords, nodeSize, m + 1, right, 1 - axis);
+  }
+  function select(ids, coords, k, left, right, axis) {
+    while (right > left) {
+      if (right - left > 600) {
+        const n = right - left + 1;
+        const m = k - left + 1;
+        const z = Math.log(n);
+        const s = 0.5 * Math.exp(2 * z / 3);
+        const sd = 0.5 * Math.sqrt(z * s * (n - s) / n) * (m - n / 2 < 0 ? -1 : 1);
+        const newLeft = Math.max(left, Math.floor(k - m * s / n + sd));
+        const newRight = Math.min(right, Math.floor(k + (n - m) * s / n + sd));
+        select(ids, coords, k, newLeft, newRight, axis);
+      }
+      const t = coords[2 * k + axis];
+      let i = left;
+      let j = right;
+      swapItem(ids, coords, left, k);
+      if (coords[2 * right + axis] > t) swapItem(ids, coords, left, right);
+      while (i < j) {
+        swapItem(ids, coords, i, j);
+        i++;
+        j--;
+        while (coords[2 * i + axis] < t) i++;
+        while (coords[2 * j + axis] > t) j--;
+      }
+      if (coords[2 * left + axis] === t) swapItem(ids, coords, left, j);
+      else {
+        j++;
+        swapItem(ids, coords, j, right);
+      }
+      if (j <= k) left = j + 1;
+      if (k <= j) right = j - 1;
+    }
+  }
+  function swapItem(ids, coords, i, j) {
+    swap(ids, i, j);
+    swap(coords, 2 * i, 2 * j);
+    swap(coords, 2 * i + 1, 2 * j + 1);
+  }
+  function swap(arr, i, j) {
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  function sqDist(ax, ay, bx, by) {
+    const dx = ax - bx;
+    const dy = ay - by;
+    return dx * dx + dy * dy;
+  }
+  var ARRAY_TYPES, VERSION, HEADER_SIZE, KDBush;
+  var init_kdbush = __esm({
+    "kdbush/index.js"() {
+      ARRAY_TYPES = [
+        Int8Array,
+        Uint8Array,
+        Uint8ClampedArray,
+        Int16Array,
+        Uint16Array,
+        Int32Array,
+        Uint32Array,
+        Float32Array,
+        Float64Array
+      ];
+      VERSION = 1;
+      HEADER_SIZE = 8;
+      KDBush = class _KDBush {
+        /**
+         * Creates an index from raw `ArrayBuffer` data.
+         * @param {ArrayBufferLike} data
+         */
+        static from(data) {
+          if (!data || data.byteLength === void 0 || data.buffer) {
+            throw new Error("Data must be an instance of ArrayBuffer or SharedArrayBuffer.");
+          }
+          const [magic, versionAndType] = new Uint8Array(data, 0, 2);
+          if (magic !== 219) {
+            throw new Error("Data does not appear to be in a KDBush format.");
+          }
+          const version = versionAndType >> 4;
+          if (version !== VERSION) {
+            throw new Error(`Got v${version} data when expected v${VERSION}.`);
+          }
+          const ArrayType = ARRAY_TYPES[versionAndType & 15];
+          if (!ArrayType) {
+            throw new Error("Unrecognized array type.");
+          }
+          const [nodeSize] = new Uint16Array(data, 2, 1);
+          const [numItems] = new Uint32Array(data, 4, 1);
+          return new _KDBush(numItems, nodeSize, ArrayType, void 0, data);
+        }
+        /**
+         * Creates an index that will hold a given number of items.
+         * @param {number} numItems
+         * @param {number} [nodeSize=64] Size of the KD-tree node (64 by default).
+         * @param {TypedArrayConstructor} [ArrayType=Float64Array] The array type used for coordinates storage (`Float64Array` by default).
+         * @param {ArrayBufferConstructor | SharedArrayBufferConstructor} [ArrayBufferType=ArrayBuffer] The array buffer type used for storage (`ArrayBuffer` by default).
+         * @param {ArrayBufferLike} [data] (For internal use only)
+         */
+        constructor(numItems, nodeSize = 64, ArrayType = Float64Array, ArrayBufferType = ArrayBuffer, data) {
+          if (isNaN(numItems) || numItems < 0) throw new Error(`Unexpected numItems value: ${numItems}.`);
+          this.numItems = +numItems;
+          this.nodeSize = Math.min(Math.max(+nodeSize, 2), 65535);
+          this.ArrayType = ArrayType;
+          this.IndexArrayType = numItems < 65536 ? Uint16Array : Uint32Array;
+          const arrayTypeIndex = ARRAY_TYPES.indexOf(this.ArrayType);
+          const coordsByteSize = numItems * 2 * this.ArrayType.BYTES_PER_ELEMENT;
+          const idsByteSize = numItems * this.IndexArrayType.BYTES_PER_ELEMENT;
+          const padCoords = (8 - idsByteSize % 8) % 8;
+          if (arrayTypeIndex < 0) {
+            throw new Error(`Unexpected typed array class: ${ArrayType}.`);
+          }
+          if (data) {
+            this.data = data;
+            this.ids = new this.IndexArrayType(data, HEADER_SIZE, numItems);
+            this.coords = new ArrayType(data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
+            this._pos = numItems * 2;
+            this._finished = true;
+          } else {
+            const data2 = this.data = new ArrayBufferType(HEADER_SIZE + coordsByteSize + idsByteSize + padCoords);
+            this.ids = new this.IndexArrayType(data2, HEADER_SIZE, numItems);
+            this.coords = new ArrayType(data2, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
+            this._pos = 0;
+            this._finished = false;
+            new Uint8Array(data2, 0, 2).set([219, (VERSION << 4) + arrayTypeIndex]);
+            new Uint16Array(data2, 2, 1)[0] = nodeSize;
+            new Uint32Array(data2, 4, 1)[0] = numItems;
+          }
+        }
+        /**
+         * Add a point to the index.
+         * @param {number} x
+         * @param {number} y
+         * @returns {number} An incremental index associated with the added item (starting from `0`).
+         */
+        add(x, y) {
+          const index = this._pos >> 1;
+          this.ids[index] = index;
+          this.coords[this._pos++] = x;
+          this.coords[this._pos++] = y;
+          return index;
+        }
+        /**
+         * Perform indexing of the added points.
+         */
+        finish() {
+          const numAdded = this._pos >> 1;
+          if (numAdded !== this.numItems) {
+            throw new Error(`Added ${numAdded} items when expected ${this.numItems}.`);
+          }
+          sort(this.ids, this.coords, this.nodeSize, 0, this.numItems - 1, 0);
+          this._finished = true;
+          return this;
+        }
+        /**
+         * Search the index for items within a given bounding box.
+         * @param {number} minX
+         * @param {number} minY
+         * @param {number} maxX
+         * @param {number} maxY
+         * @returns {number[]} An array of indices correponding to the found items.
+         */
+        range(minX, minY, maxX, maxY) {
+          if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
+          const { ids, coords, nodeSize } = this;
+          const stack = [0, ids.length - 1, 0];
+          const result = [];
+          while (stack.length) {
+            const axis = stack.pop() || 0;
+            const right = stack.pop() || 0;
+            const left = stack.pop() || 0;
+            if (right - left <= nodeSize) {
+              for (let i = left; i <= right; i++) {
+                const x2 = coords[2 * i];
+                const y2 = coords[2 * i + 1];
+                if (x2 >= minX && x2 <= maxX && y2 >= minY && y2 <= maxY) result.push(ids[i]);
+              }
+              continue;
+            }
+            const m = left + right >> 1;
+            const x = coords[2 * m];
+            const y = coords[2 * m + 1];
+            if (x >= minX && x <= maxX && y >= minY && y <= maxY) result.push(ids[m]);
+            if (axis === 0 ? !Number.isFinite(x) || minX <= x : !Number.isFinite(y) || minY <= y) {
+              stack.push(left);
+              stack.push(m - 1);
+              stack.push(1 - axis);
+            }
+            if (axis === 0 ? !Number.isFinite(x) || maxX >= x : !Number.isFinite(y) || maxY >= y) {
+              stack.push(m + 1);
+              stack.push(right);
+              stack.push(1 - axis);
+            }
+          }
+          return result;
+        }
+        /**
+         * Search the index for items within a given radius.
+         * @param {number} qx
+         * @param {number} qy
+         * @param {number} r Query radius.
+         * @returns {number[]} An array of indices correponding to the found items.
+         */
+        within(qx, qy, r) {
+          if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
+          const { ids, coords, nodeSize } = this;
+          const stack = [0, ids.length - 1, 0];
+          const result = [];
+          const r2 = r * r;
+          while (stack.length) {
+            const axis = stack.pop() || 0;
+            const right = stack.pop() || 0;
+            const left = stack.pop() || 0;
+            if (right - left <= nodeSize) {
+              for (let i = left; i <= right; i++) {
+                if (sqDist(coords[2 * i], coords[2 * i + 1], qx, qy) <= r2) result.push(ids[i]);
+              }
+              continue;
+            }
+            const m = left + right >> 1;
+            const x = coords[2 * m];
+            const y = coords[2 * m + 1];
+            if (sqDist(x, y, qx, qy) <= r2) result.push(ids[m]);
+            if (axis === 0 ? qx - r <= x : qy - r <= y) {
+              stack.push(left);
+              stack.push(m - 1);
+              stack.push(1 - axis);
+            }
+            if (axis === 0 ? qx + r >= x : qy + r >= y) {
+              stack.push(m + 1);
+              stack.push(right);
+              stack.push(1 - axis);
+            }
+          }
+          return result;
+        }
+      };
+    }
+  });
+
   // src/plots/cartesian/align_period.js
   var require_align_period = __commonJS({
     "src/plots/cartesian/align_period.js"(exports, module) {
@@ -48405,6 +48651,7 @@ var Plotly = (() => {
   var require_calc3 = __commonJS({
     "src/traces/scatter/calc.js"(exports, module) {
       "use strict";
+      init_kdbush();
       var isNumeric = require_fast_isnumeric();
       var Lib = require_lib();
       var Axes = require_axes();
@@ -48533,6 +48780,33 @@ var Plotly = (() => {
             }
           }
         }
+        var positions = new Array(serieslen * 2);
+        var _ids = new Array(serieslen);
+        for (i = 0; i < serieslen; i++) {
+          positions[i * 2] = x[i] === void 0 ? NaN : x[i];
+          positions[i * 2 + 1] = y[i] === void 0 ? NaN : y[i];
+          _ids[i] = i;
+        }
+        if (xa.type === "log") {
+          for (i = 0; i < serieslen * 2; i += 2) {
+            positions[i] = xa.c2l(positions[i]);
+          }
+        }
+        if (ya.type === "log") {
+          for (i = 1; i < serieslen * 2; i += 2) {
+            positions[i] = ya.c2l(positions[i]);
+          }
+        }
+        var tree = new KDBush(serieslen);
+        for (i = 0; i < serieslen; i++) {
+          tree.add(positions[i * 2], positions[i * 2 + 1]);
+        }
+        tree.finish();
+        cd[0].t = {};
+        cd[0].t.tree = tree;
+        cd[0].t.x = x;
+        cd[0].t.y = y;
+        cd[0].t.ids = _ids;
         return cd;
       }
       function calcAxisExpansion(gd, trace, xa, ya, x, y, ppad) {
@@ -50487,180 +50761,177 @@ var Plotly = (() => {
   var require_hover2 = __commonJS({
     "src/traces/scatter/hover.js"(exports, module) {
       "use strict";
-      var Lib = require_lib();
-      var Fx = require_fx();
       var Registry = require_registry();
+      var Lib = require_lib();
       var getTraceColor = require_get_trace_color();
-      var Color2 = require_color();
-      var fillText = Lib.fillText;
       module.exports = function hoverPoints(pointData, xval, yval, hovermode) {
         var cd = pointData.cd;
+        var stash = cd[0].t;
         var trace = cd[0].trace;
         var xa = pointData.xa;
         var ya = pointData.ya;
+        var x = stash.x;
+        var y = stash.y;
         var xpx = xa.c2p(xval);
         var ypx = ya.c2p(yval);
-        var pt = [xpx, ypx];
-        var hoveron = trace.hoveron || "";
-        var minRad = trace.mode.indexOf("markers") !== -1 ? 3 : 0.5;
-        var xPeriod = !!trace.xperiodalignment;
-        var yPeriod = !!trace.yperiodalignment;
-        if (hoveron.indexOf("points") !== -1) {
-          var dx = function(di2) {
+        var maxDistance = pointData.distance;
+        var ids;
+        if (stash.tree) {
+          var xl = xa.p2c(xpx - maxDistance);
+          var xr = xa.p2c(xpx + maxDistance);
+          var yl = ya.p2c(ypx - maxDistance);
+          var yr = ya.p2c(ypx + maxDistance);
+          if (hovermode === "x") {
+            ids = stash.tree.range(
+              Math.min(xl, xr),
+              Math.min(ya._rl[0], ya._rl[1]),
+              Math.max(xl, xr),
+              Math.max(ya._rl[0], ya._rl[1])
+            );
+          } else {
+            ids = stash.tree.range(
+              Math.min(xl, xr),
+              Math.min(yl, yr),
+              Math.max(xl, xr),
+              Math.max(yl, yr)
+            );
+          }
+        } else {
+          ids = stash.ids;
+        }
+        var k, closestId, ptx, pty, i, dx, dy, dist, dxy;
+        var minDist = maxDistance;
+        if (hovermode === "x") {
+          var xPeriod = !!trace.xperiodalignment;
+          var yPeriod = !!trace.yperiodalignment;
+          for (i = 0; i < ids.length; i++) {
+            k = ids[i];
+            ptx = x[k];
+            dx = Math.abs(xa.c2p(ptx) - xpx);
             if (xPeriod) {
-              var x0 = xa.c2p(di2.xStart);
-              var x1 = xa.c2p(di2.xEnd);
-              return xpx >= Math.min(x0, x1) && xpx <= Math.max(x0, x1) ? 0 : Infinity;
+              var x0 = xa.c2p(trace._xStarts[k]);
+              var x1 = xa.c2p(trace._xEnds[k]);
+              dx = xpx >= Math.min(x0, x1) && xpx <= Math.max(x0, x1) ? 0 : Infinity;
             }
-            var rad2 = Math.max(3, di2.mrc || 0);
-            var kink = 1 - 1 / rad2;
-            var dxRaw = Math.abs(xa.c2p(di2.x) - xpx);
-            return dxRaw < rad2 ? kink * dxRaw / rad2 : dxRaw - rad2 + kink;
-          };
-          var dy = function(di2) {
-            if (yPeriod) {
-              var y0 = ya.c2p(di2.yStart);
-              var y1 = ya.c2p(di2.yEnd);
-              return ypx >= Math.min(y0, y1) && ypx <= Math.max(y0, y1) ? 0 : Infinity;
-            }
-            var rad2 = Math.max(3, di2.mrc || 0);
-            var kink = 1 - 1 / rad2;
-            var dyRaw = Math.abs(ya.c2p(di2.y) - ypx);
-            return dyRaw < rad2 ? kink * dyRaw / rad2 : dyRaw - rad2 + kink;
-          };
-          var dxy = function(di2) {
-            var rad2 = Math.max(minRad, di2.mrc || 0);
-            var dx2 = xa.c2p(di2.x) - xpx;
-            var dy2 = ya.c2p(di2.y) - ypx;
-            return Math.max(Math.sqrt(dx2 * dx2 + dy2 * dy2) - rad2, 1 - minRad / rad2);
-          };
-          var distfn = Fx.getDistanceFunction(hovermode, dx, dy, dxy);
-          Fx.getClosest(cd, distfn, pointData);
-          if (pointData.index !== false) {
-            var di = cd[pointData.index];
-            var xc = xa.c2p(di.x, true);
-            var yc = ya.c2p(di.y, true);
-            var rad = di.mrc || 1;
-            pointData.index = di.i;
-            var orientation = cd[0].t.orientation;
-            var sizeVal = orientation && (di.sNorm || di.s);
-            var xLabelVal = orientation === "h" ? sizeVal : di.orig_x !== void 0 ? di.orig_x : di.x;
-            var yLabelVal = orientation === "v" ? sizeVal : di.orig_y !== void 0 ? di.orig_y : di.y;
-            Lib.extendFlat(pointData, {
-              color: getTraceColor(trace, di),
-              x0: xc - rad,
-              x1: xc + rad,
-              xLabelVal,
-              y0: yc - rad,
-              y1: yc + rad,
-              yLabelVal,
-              spikeDistance: dxy(di),
-              hovertemplate: trace.hovertemplate
-            });
-            fillText(di, trace, pointData);
-            Registry.getComponentMethod("errorbars", "hoverInfo")(di, trace, pointData);
-            return [pointData];
-          }
-        }
-        function isHoverPointInFillElement(el) {
-          if (!el) {
-            return false;
-          }
-          var svgElement = el.node();
-          try {
-            var domPoint = new DOMPoint(pt[0], pt[1]);
-            return svgElement.isPointInFill(domPoint);
-          } catch (TypeError2) {
-            var svgPoint = svgElement.ownerSVGElement.createSVGPoint();
-            svgPoint.x = pt[0];
-            svgPoint.y = pt[1];
-            return svgElement.isPointInFill(svgPoint);
-          }
-        }
-        function getHoverLabelPosition(polygons) {
-          var i;
-          var polygonsIn = [];
-          var xmin = Infinity;
-          var xmax = -Infinity;
-          var ymin = Infinity;
-          var ymax = -Infinity;
-          var yPos;
-          for (i = 0; i < polygons.length; i++) {
-            var polygon = polygons[i];
-            if (polygon.contains(pt)) {
-              polygonsIn.push(polygon);
-              ymin = Math.min(ymin, polygon.ymin);
-              ymax = Math.max(ymax, polygon.ymax);
-            }
-          }
-          if (polygonsIn.length === 0) {
-            return null;
-          }
-          ymin = Math.max(ymin, 0);
-          ymax = Math.min(ymax, ya._length);
-          yPos = (ymin + ymax) / 2;
-          var j, pts, xAtYPos, x0, x1, y0, y1;
-          for (i = 0; i < polygonsIn.length; i++) {
-            pts = polygonsIn[i].pts;
-            for (j = 1; j < pts.length; j++) {
-              y0 = pts[j - 1][1];
-              y1 = pts[j][1];
-              if (y0 > yPos !== y1 >= yPos) {
-                x0 = pts[j - 1][0];
-                x1 = pts[j][0];
-                if (y1 - y0) {
-                  xAtYPos = x0 + (x1 - x0) * (yPos - y0) / (y1 - y0);
-                  xmin = Math.min(xmin, xAtYPos);
-                  xmax = Math.max(xmax, xAtYPos);
-                }
+            if (dx < minDist) {
+              minDist = dx;
+              pty = y[k];
+              dy = ya.c2p(pty) - ypx;
+              if (yPeriod) {
+                var y0 = ya.c2p(trace._yStarts[k]);
+                var y1 = ya.c2p(trace._yEnds[k]);
+                dy = ypx >= Math.min(y0, y1) && ypx <= Math.max(y0, y1) ? 0 : Infinity;
               }
+              dxy = Math.sqrt(dx * dx + dy * dy);
+              closestId = ids[i];
             }
           }
-          xmin = Math.max(xmin, 0);
-          xmax = Math.min(xmax, xa._length);
-          return {
-            x0: xmin,
-            x1: xmax,
-            y0: yPos,
-            y1: yPos
-          };
-        }
-        if (hoveron.indexOf("fills") !== -1 && trace._fillElement) {
-          var inside = isHoverPointInFillElement(trace._fillElement) && !isHoverPointInFillElement(trace._fillExclusionElement);
-          if (inside) {
-            var hoverLabelCoords = getHoverLabelPosition(trace._polygons);
-            if (hoverLabelCoords === null) {
-              hoverLabelCoords = {
-                x0: pt[0],
-                x1: pt[0],
-                y0: pt[1],
-                y1: pt[1]
-              };
+        } else {
+          for (i = ids.length - 1; i > -1; i--) {
+            k = ids[i];
+            ptx = x[k];
+            pty = y[k];
+            dx = xa.c2p(ptx) - xpx;
+            dy = ya.c2p(pty) - ypx;
+            dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < minDist) {
+              minDist = dxy = dist;
+              closestId = k;
             }
-            var color2 = Color2.defaultLine;
-            if (Color2.opacity(trace.fillcolor)) color2 = trace.fillcolor;
-            else if (Color2.opacity((trace.line || {}).color)) {
-              color2 = trace.line.color;
-            }
-            Lib.extendFlat(pointData, {
-              // never let a 2D override 1D type as closest point
-              // also: no spikeDistance, it's not allowed for fills
-              distance: pointData.maxHoverDistance,
-              x0: hoverLabelCoords.x0,
-              x1: hoverLabelCoords.x1,
-              y0: hoverLabelCoords.y0,
-              y1: hoverLabelCoords.y1,
-              color: color2,
-              hovertemplate: false
-            });
-            delete pointData.index;
-            if (trace.text && !Lib.isArrayOrTypedArray(trace.text)) {
-              pointData.text = String(trace.text);
-            } else pointData.text = trace.name;
-            return [pointData];
           }
         }
+        pointData.index = closestId;
+        pointData.distance = minDist;
+        pointData.dxy = dxy;
+        if (closestId === void 0) return [pointData];
+        return [calcHover(pointData, x, y, trace)];
       };
+      function calcHover(pointData, x, y, trace) {
+        var xa = pointData.xa;
+        var ya = pointData.ya;
+        var minDist = pointData.distance;
+        var dxy = pointData.dxy;
+        var id = pointData.index;
+        var di = {
+          pointNumber: id,
+          x: x[id],
+          y: y[id]
+        };
+        di.tx = Lib.isArrayOrTypedArray(trace.text) ? trace.text[id] : trace.text;
+        di.htx = Array.isArray(trace.hovertext) ? trace.hovertext[id] : trace.hovertext;
+        di.data = Array.isArray(trace.customdata) ? trace.customdata[id] : trace.customdata;
+        di.tp = Array.isArray(trace.textposition) ? trace.textposition[id] : trace.textposition;
+        var font = trace.textfont;
+        if (font) {
+          di.ts = Lib.isArrayOrTypedArray(font.size) ? font.size[id] : font.size;
+          di.tc = Lib.isArrayOrTypedArray(font.color) ? font.color[id] : font.color;
+          di.tf = Array.isArray(font.family) ? font.family[id] : font.family;
+          di.tw = Array.isArray(font.weight) ? font.weight[id] : font.weight;
+          di.ty = Array.isArray(font.style) ? font.style[id] : font.style;
+          di.tv = Array.isArray(font.variant) ? font.variant[id] : font.variant;
+        }
+        var marker = trace.marker;
+        if (marker) {
+          di.ms = Lib.isArrayOrTypedArray(marker.size) ? marker.size[id] : marker.size;
+          di.mo = Lib.isArrayOrTypedArray(marker.opacity) ? marker.opacity[id] : marker.opacity;
+          di.mx = Lib.isArrayOrTypedArray(marker.symbol) ? marker.symbol[id] : marker.symbol;
+          di.ma = Lib.isArrayOrTypedArray(marker.angle) ? marker.angle[id] : marker.angle;
+          di.mc = Lib.isArrayOrTypedArray(marker.color) ? marker.color[id] : marker.color;
+        }
+        var line = marker && marker.line;
+        if (line) {
+          di.mlc = Array.isArray(line.color) ? line.color[id] : line.color;
+          di.mlw = Lib.isArrayOrTypedArray(line.width) ? line.width[id] : line.width;
+        }
+        var grad = marker && marker.gradient;
+        if (grad && grad.type !== "none") {
+          di.mgt = Array.isArray(grad.type) ? grad.type[id] : grad.type;
+          di.mgc = Array.isArray(grad.color) ? grad.color[id] : grad.color;
+        }
+        var xp = xa.c2p(di.x, true);
+        var yp = ya.c2p(di.y, true);
+        var rad = di.mrc || 1;
+        var hoverlabel = trace.hoverlabel;
+        if (hoverlabel) {
+          di.hbg = Array.isArray(hoverlabel.bgcolor) ? hoverlabel.bgcolor[id] : hoverlabel.bgcolor;
+          di.hbc = Array.isArray(hoverlabel.bordercolor) ? hoverlabel.bordercolor[id] : hoverlabel.bordercolor;
+          di.hts = Lib.isArrayOrTypedArray(hoverlabel.font.size) ? hoverlabel.font.size[id] : hoverlabel.font.size;
+          di.htc = Array.isArray(hoverlabel.font.color) ? hoverlabel.font.color[id] : hoverlabel.font.color;
+          di.htf = Array.isArray(hoverlabel.font.family) ? hoverlabel.font.family[id] : hoverlabel.font.family;
+          di.hnl = Lib.isArrayOrTypedArray(hoverlabel.namelength) ? hoverlabel.namelength[id] : hoverlabel.namelength;
+        }
+        var hoverinfo = trace.hoverinfo;
+        if (hoverinfo) {
+          di.hi = Array.isArray(hoverinfo) ? hoverinfo[id] : hoverinfo;
+        }
+        var hovertemplate = trace.hovertemplate;
+        if (hovertemplate) {
+          di.ht = Array.isArray(hovertemplate) ? hovertemplate[id] : hovertemplate;
+        }
+        var fakeCd = {};
+        fakeCd[pointData.index] = di;
+        var origX = trace._origX;
+        var origY = trace._origY;
+        var pointData2 = Lib.extendFlat({}, pointData, {
+          color: getTraceColor(trace, di),
+          x0: xp - rad,
+          x1: xp + rad,
+          xLabelVal: origX ? origX[id] : di.x,
+          y0: yp - rad,
+          y1: yp + rad,
+          yLabelVal: origY ? origY[id] : di.y,
+          cd: fakeCd,
+          distance: minDist,
+          spikeDistance: dxy,
+          hovertemplate: di.ht
+        });
+        if (di.htx) pointData2.text = di.htx;
+        else if (di.tx) pointData2.text = di.tx;
+        else if (trace.text) pointData2.text = trace.text;
+        Lib.fillText(di, trace, pointData2);
+        Registry.getComponentMethod("errorbars", "hoverInfo")(di, trace, pointData2);
+        return pointData2;
+      }
     }
   });
 
@@ -64097,7 +64368,6 @@ var Plotly = (() => {
         } else {
           ids = stash.ids;
         }
-
         var k, closestId, ptx, pty, i, dx, dy, dist, dxy;
         var minDist = maxDistance;
         if (hovermode === "x") {
@@ -64458,252 +64728,6 @@ var Plotly = (() => {
         if (!("x" in cdi)) cdi.x = trace._x[i];
         if (!("y" in cdi)) cdi.y = trace._y[i];
         return scatterFormatLabels(cdi, trace, fullLayout);
-      };
-    }
-  });
-
-  // node_modules/kdbush/index.js
-  function sort(ids, coords, nodeSize, left, right, axis) {
-    if (right - left <= nodeSize) return;
-    const m = left + right >> 1;
-    select(ids, coords, m, left, right, axis);
-    sort(ids, coords, nodeSize, left, m - 1, 1 - axis);
-    sort(ids, coords, nodeSize, m + 1, right, 1 - axis);
-  }
-  function select(ids, coords, k, left, right, axis) {
-    while (right > left) {
-      if (right - left > 600) {
-        const n = right - left + 1;
-        const m = k - left + 1;
-        const z = Math.log(n);
-        const s = 0.5 * Math.exp(2 * z / 3);
-        const sd = 0.5 * Math.sqrt(z * s * (n - s) / n) * (m - n / 2 < 0 ? -1 : 1);
-        const newLeft = Math.max(left, Math.floor(k - m * s / n + sd));
-        const newRight = Math.min(right, Math.floor(k + (n - m) * s / n + sd));
-        select(ids, coords, k, newLeft, newRight, axis);
-      }
-      const t = coords[2 * k + axis];
-      let i = left;
-      let j = right;
-      swapItem(ids, coords, left, k);
-      if (coords[2 * right + axis] > t) swapItem(ids, coords, left, right);
-      while (i < j) {
-        swapItem(ids, coords, i, j);
-        i++;
-        j--;
-        while (coords[2 * i + axis] < t) i++;
-        while (coords[2 * j + axis] > t) j--;
-      }
-      if (coords[2 * left + axis] === t) swapItem(ids, coords, left, j);
-      else {
-        j++;
-        swapItem(ids, coords, j, right);
-      }
-      if (j <= k) left = j + 1;
-      if (k <= j) right = j - 1;
-    }
-  }
-  function swapItem(ids, coords, i, j) {
-    swap(ids, i, j);
-    swap(coords, 2 * i, 2 * j);
-    swap(coords, 2 * i + 1, 2 * j + 1);
-  }
-  function swap(arr, i, j) {
-    const tmp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = tmp;
-  }
-  function sqDist(ax, ay, bx, by) {
-    const dx = ax - bx;
-    const dy = ay - by;
-    return dx * dx + dy * dy;
-  }
-  var ARRAY_TYPES, VERSION, HEADER_SIZE, KDBush;
-  var init_kdbush = __esm({
-    "node_modules/kdbush/index.js"() {
-      ARRAY_TYPES = [
-        Int8Array,
-        Uint8Array,
-        Uint8ClampedArray,
-        Int16Array,
-        Uint16Array,
-        Int32Array,
-        Uint32Array,
-        Float32Array,
-        Float64Array
-      ];
-      VERSION = 1;
-      HEADER_SIZE = 8;
-      KDBush = class _KDBush {
-        /**
-         * Creates an index from raw `ArrayBuffer` data.
-         * @param {ArrayBuffer} data
-         */
-        static from(data) {
-          if (!(data instanceof ArrayBuffer)) {
-            throw new Error("Data must be an instance of ArrayBuffer.");
-          }
-          const [magic, versionAndType] = new Uint8Array(data, 0, 2);
-          if (magic !== 219) {
-            throw new Error("Data does not appear to be in a KDBush format.");
-          }
-          const version = versionAndType >> 4;
-          if (version !== VERSION) {
-            throw new Error(`Got v${version} data when expected v${VERSION}.`);
-          }
-          const ArrayType = ARRAY_TYPES[versionAndType & 15];
-          if (!ArrayType) {
-            throw new Error("Unrecognized array type.");
-          }
-          const [nodeSize] = new Uint16Array(data, 2, 1);
-          const [numItems] = new Uint32Array(data, 4, 1);
-          return new _KDBush(numItems, nodeSize, ArrayType, data);
-        }
-        /**
-         * Creates an index that will hold a given number of items.
-         * @param {number} numItems
-         * @param {number} [nodeSize=64] Size of the KD-tree node (64 by default).
-         * @param {TypedArrayConstructor} [ArrayType=Float64Array] The array type used for coordinates storage (`Float64Array` by default).
-         * @param {ArrayBuffer} [data] (For internal use only)
-         */
-        constructor(numItems, nodeSize = 64, ArrayType = Float64Array, data) {
-          if (isNaN(numItems) || numItems < 0) throw new Error(`Unpexpected numItems value: ${numItems}.`);
-          this.numItems = +numItems;
-          this.nodeSize = Math.min(Math.max(+nodeSize, 2), 65535);
-          this.ArrayType = ArrayType;
-          this.IndexArrayType = numItems < 65536 ? Uint16Array : Uint32Array;
-          const arrayTypeIndex = ARRAY_TYPES.indexOf(this.ArrayType);
-          const coordsByteSize = numItems * 2 * this.ArrayType.BYTES_PER_ELEMENT;
-          const idsByteSize = numItems * this.IndexArrayType.BYTES_PER_ELEMENT;
-          const padCoords = (8 - idsByteSize % 8) % 8;
-          if (arrayTypeIndex < 0) {
-            throw new Error(`Unexpected typed array class: ${ArrayType}.`);
-          }
-          if (data && data instanceof ArrayBuffer) {
-            this.data = data;
-            this.ids = new this.IndexArrayType(this.data, HEADER_SIZE, numItems);
-            this.coords = new this.ArrayType(this.data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
-            this._pos = numItems * 2;
-            this._finished = true;
-          } else {
-            this.data = new ArrayBuffer(HEADER_SIZE + coordsByteSize + idsByteSize + padCoords);
-            this.ids = new this.IndexArrayType(this.data, HEADER_SIZE, numItems);
-            this.coords = new this.ArrayType(this.data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
-            this._pos = 0;
-            this._finished = false;
-            new Uint8Array(this.data, 0, 2).set([219, (VERSION << 4) + arrayTypeIndex]);
-            new Uint16Array(this.data, 2, 1)[0] = nodeSize;
-            new Uint32Array(this.data, 4, 1)[0] = numItems;
-          }
-        }
-        /**
-         * Add a point to the index.
-         * @param {number} x
-         * @param {number} y
-         * @returns {number} An incremental index associated with the added item (starting from `0`).
-         */
-        add(x, y) {
-          const index = this._pos >> 1;
-          this.ids[index] = index;
-          this.coords[this._pos++] = x;
-          this.coords[this._pos++] = y;
-          return index;
-        }
-        /**
-         * Perform indexing of the added points.
-         */
-        finish() {
-          const numAdded = this._pos >> 1;
-          if (numAdded !== this.numItems) {
-            throw new Error(`Added ${numAdded} items when expected ${this.numItems}.`);
-          }
-          sort(this.ids, this.coords, this.nodeSize, 0, this.numItems - 1, 0);
-          this._finished = true;
-          return this;
-        }
-        /**
-         * Search the index for items within a given bounding box.
-         * @param {number} minX
-         * @param {number} minY
-         * @param {number} maxX
-         * @param {number} maxY
-         * @returns {number[]} An array of indices correponding to the found items.
-         */
-        range(minX, minY, maxX, maxY) {
-          if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
-          const { ids, coords, nodeSize } = this;
-          const stack = [0, ids.length - 1, 0];
-          const result = [];
-          while (stack.length) {
-            const axis = stack.pop() || 0;
-            const right = stack.pop() || 0;
-            const left = stack.pop() || 0;
-            if (right - left <= nodeSize) {
-              for (let i = left; i <= right; i++) {
-                const x2 = coords[2 * i];
-                const y2 = coords[2 * i + 1];
-                if (x2 >= minX && x2 <= maxX && y2 >= minY && y2 <= maxY) result.push(ids[i]);
-              }
-              continue;
-            }
-            const m = left + right >> 1;
-            const x = coords[2 * m];
-            const y = coords[2 * m + 1];
-            if (x >= minX && x <= maxX && y >= minY && y <= maxY) result.push(ids[m]);
-            if (axis === 0 ? (!Number.isFinite(x) || minX <= x) : (!Number.isFinite(y) || minY <= y)
-            ) {
-              stack.push(left);
-              stack.push(m - 1);
-              stack.push(1 - axis);
-            }
-            if (axis === 0 ? (!Number.isFinite(x) || maxX >= x) : (!Number.isFinite(y) || maxY >= y)) {
-              stack.push(m + 1);
-              stack.push(right);
-              stack.push(1 - axis);
-            }
-          }
-          return result;
-        }
-        /**
-         * Search the index for items within a given radius.
-         * @param {number} qx
-         * @param {number} qy
-         * @param {number} r Query radius.
-         * @returns {number[]} An array of indices correponding to the found items.
-         */
-        within(qx, qy, r) {
-          if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
-          const { ids, coords, nodeSize } = this;
-          const stack = [0, ids.length - 1, 0];
-          const result = [];
-          const r2 = r * r;
-          while (stack.length) {
-            const axis = stack.pop() || 0;
-            const right = stack.pop() || 0;
-            const left = stack.pop() || 0;
-            if (right - left <= nodeSize) {
-              for (let i = left; i <= right; i++) {
-                if (sqDist(coords[2 * i], coords[2 * i + 1], qx, qy) <= r2) result.push(ids[i]);
-              }
-              continue;
-            }
-            const m = left + right >> 1;
-            const x = coords[2 * m];
-            const y = coords[2 * m + 1];
-            if (sqDist(x, y, qx, qy) <= r2) result.push(ids[m]);
-            if (axis === 0 ? qx - r <= x : qy - r <= y) {
-              stack.push(left);
-              stack.push(m - 1);
-              stack.push(1 - axis);
-            }
-            if (axis === 0 ? qx + r >= x : qy + r >= y) {
-              stack.push(m + 1);
-              stack.push(right);
-              stack.push(1 - axis);
-            }
-          }
-          return result;
-        }
       };
     }
   });
@@ -73002,7 +73026,7 @@ var Plotly = (() => {
       };
       var extend$1 = require_object_assign();
       var reglScatter2d = function reglScatter2d2(regl, options) {
-        var scatter$1 = new scatter(regl, options);
+        var scatter$1 = new Scatter(regl, options);
         var render = scatter$1.render.bind(scatter$1);
         extend$1(render, {
           render,
@@ -101130,11 +101154,11 @@ void main() {
             @memberof ChineseCalendar */
         hasYearZero: false,
         /** The minimum month number.
-            This calendar uses month indices to account for intercalary months.
+            This calendar uses month indices to account for intercalary months. 
             @memberof ChineseCalendar */
         minMonth: 0,
         /** The first month in the year.
-            This calendar uses month indices to account for intercalary months.
+            This calendar uses month indices to account for intercalary months. 
             @memberof ChineseCalendar */
         firstMonth: 0,
         /** The minimum day number.
