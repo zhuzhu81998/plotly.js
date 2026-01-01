@@ -1,5 +1,6 @@
 'use strict';
 
+import KDBush from 'kdbush';
 var isNumeric = require('fast-isnumeric');
 var Lib = require('../../lib');
 
@@ -152,6 +153,40 @@ function calc(gd, trace) {
             }
         }
     }
+
+    // we need hi-precision for scatter2d,
+    // regl-scatter2d uses NaNs for bad/missing values
+    var positions = new Array(serieslen * 2);
+    var _ids = new Array(serieslen);
+    for(i = 0; i < serieslen; i++) {
+        positions[i * 2] = x[i] === undefined ? NaN : x[i];
+        positions[i * 2 + 1] = y[i] === undefined ? NaN : y[i];
+        // Pre-compute ids.
+        _ids[i] = i;
+    }
+
+    if(xa.type === 'log') {
+        for(i = 0; i < serieslen * 2; i += 2) {
+            positions[i] = xa.c2l(positions[i]);
+        }
+    }
+    if(ya.type === 'log') {
+        for(i = 1; i < serieslen * 2; i += 2) {
+            positions[i] = ya.c2l(positions[i]);
+        }
+    }
+
+    var tree = new KDBush(serieslen);
+    for(i = 0; i < serieslen; i++) {
+        tree.add(positions[i * 2], positions[i * 2 + 1]);
+    }
+    tree.finish();
+
+    cd[0].t = {};
+    cd[0].t.tree = tree;
+    cd[0].t.x = x;
+    cd[0].t.y = y;
+    cd[0].t.ids = _ids;
 
     return cd;
 }
