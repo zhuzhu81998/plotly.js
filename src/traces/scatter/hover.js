@@ -1,263 +1,217 @@
 'use strict';
 
-var Lib = require('../../lib');
-var Fx = require('../../components/fx');
 var Registry = require('../../registry');
-var getTraceColor = require('./get_trace_color');
-var Color = require('../../components/color');
-var fillText = Lib.fillText;
+var Lib = require('../../lib');
+var getTraceColor = require('../scatter/get_trace_color');
 
 module.exports = function hoverPoints(pointData, xval, yval, hovermode) {
     var cd = pointData.cd;
+    var stash = cd[0].t;
     var trace = cd[0].trace;
     var xa = pointData.xa;
     var ya = pointData.ya;
+    var x = stash.x;
+    var y = stash.y;
     var xpx = xa.c2p(xval);
     var ypx = ya.c2p(yval);
-    var pt = [xpx, ypx];
-    var hoveron = trace.hoveron || '';
-    var minRad = (trace.mode.indexOf('markers') !== -1) ? 3 : 0.5;
+    var maxDistance = pointData.distance;
+    var ids;
 
-    var xPeriod = !!trace.xperiodalignment;
-    var yPeriod = !!trace.yperiodalignment;
+    // FIXME: make sure this is a proper way to calc search radius
+    if(stash.tree) {
+        var xl = xa.p2c(xpx - maxDistance);
+        var xr = xa.p2c(xpx + maxDistance);
+        var yl = ya.p2c(ypx - maxDistance);
+        var yr = ya.p2c(ypx + maxDistance);
 
-    // look for points to hover on first, then take fills only if we
-    // didn't find a point
+        if(hovermode === 'x') {
+            ids = stash.tree.range(
+                Math.min(xl, xr), Math.min(ya._rl[0], ya._rl[1]),
+                Math.max(xl, xr), Math.max(ya._rl[0], ya._rl[1])
+            );
+        } else {
+            ids = stash.tree.range(
+                Math.min(xl, xr), Math.min(yl, yr),
+                Math.max(xl, xr), Math.max(yl, yr)
+            );
+        }
+    } else {
+        ids = stash.ids;
+    }
 
-    if(hoveron.indexOf('points') !== -1) {
-        // dx and dy are used in compare modes - here we want to always
-        // prioritize the closest data point, at least as long as markers are
-        // the same size or nonexistent, but still try to prioritize small markers too.
-        var dx = function(di) {
+    // pick the id closest to the point
+    // note that point possibly may not be found
+    var k, closestId, ptx, pty, i, dx, dy, dist, dxy;
+
+    var minDist = maxDistance;
+    if(hovermode === 'x') {
+        var xPeriod = !!trace.xperiodalignment;
+        var yPeriod = !!trace.yperiodalignment;
+
+        for(i = 0; i < ids.length; i++) {
+            k = ids[i];
+            ptx = x[k];
+
+            dx = Math.abs(xa.c2p(ptx) - xpx);
             if(xPeriod) {
-                var x0 = xa.c2p(di.xStart);
-                var x1 = xa.c2p(di.xEnd);
+                var x0 = xa.c2p(trace._xStarts[k]);
+                var x1 = xa.c2p(trace._xEnds[k]);
 
-                return (
+                dx = (
                     xpx >= Math.min(x0, x1) &&
                     xpx <= Math.max(x0, x1)
                 ) ? 0 : Infinity;
             }
 
-            var rad = Math.max(3, di.mrc || 0);
-            var kink = 1 - 1 / rad;
-            var dxRaw = Math.abs(xa.c2p(di.x) - xpx);
-            return (dxRaw < rad) ? (kink * dxRaw / rad) : (dxRaw - rad + kink);
-        };
-        var dy = function(di) {
-            if(yPeriod) {
-                var y0 = ya.c2p(di.yStart);
-                var y1 = ya.c2p(di.yEnd);
+            if(dx < minDist) {
+                minDist = dx;
+                pty = y[k];
+                dy = ya.c2p(pty) - ypx;
 
-                return (
-                    ypx >= Math.min(y0, y1) &&
-                    ypx <= Math.max(y0, y1)
-                ) ? 0 : Infinity;
-            }
+                if(yPeriod) {
+                    var y0 = ya.c2p(trace._yStarts[k]);
+                    var y1 = ya.c2p(trace._yEnds[k]);
 
-            var rad = Math.max(3, di.mrc || 0);
-            var kink = 1 - 1 / rad;
-            var dyRaw = Math.abs(ya.c2p(di.y) - ypx);
-            return (dyRaw < rad) ? (kink * dyRaw / rad) : (dyRaw - rad + kink);
-        };
-
-        // scatter points: d.mrc is the calculated marker radius
-        // adjust the distance so if you're inside the marker it
-        // always will show up regardless of point size, but
-        // prioritize smaller points
-        var dxy = function(di) {
-            var rad = Math.max(minRad, di.mrc || 0);
-            var dx = xa.c2p(di.x) - xpx;
-            var dy = ya.c2p(di.y) - ypx;
-            return Math.max(Math.sqrt(dx * dx + dy * dy) - rad, 1 - minRad / rad);
-        };
-        var distfn = Fx.getDistanceFunction(hovermode, dx, dy, dxy);
-
-        Fx.getClosest(cd, distfn, pointData);
-
-        // skip the rest (for this trace) if we didn't find a close point
-        if(pointData.index !== false) {
-            // the closest data point
-            var di = cd[pointData.index];
-            var xc = xa.c2p(di.x, true);
-            var yc = ya.c2p(di.y, true);
-            var rad = di.mrc || 1;
-
-            // now we're done using the whole `calcdata` array, replace the
-            // index with the original index (in case of inserted point from
-            // stacked area)
-            pointData.index = di.i;
-
-            var orientation = cd[0].t.orientation;
-            // TODO: for scatter and bar, option to show (sub)totals and
-            // raw data? Currently stacked and/or normalized bars just show
-            // the normalized individual sizes, so that's what I'm doing here
-            // for now.
-            var sizeVal = orientation && (di.sNorm || di.s);
-            var xLabelVal = (orientation === 'h') ? sizeVal : di.orig_x !== undefined ? di.orig_x : di.x;
-            var yLabelVal = (orientation === 'v') ? sizeVal : di.orig_y !== undefined ? di.orig_y : di.y;
-
-            Lib.extendFlat(pointData, {
-                color: getTraceColor(trace, di),
-
-                x0: xc - rad,
-                x1: xc + rad,
-                xLabelVal: xLabelVal,
-
-                y0: yc - rad,
-                y1: yc + rad,
-                yLabelVal: yLabelVal,
-
-                spikeDistance: dxy(di),
-                hovertemplate: trace.hovertemplate
-            });
-
-            fillText(di, trace, pointData);
-            Registry.getComponentMethod('errorbars', 'hoverInfo')(di, trace, pointData);
-
-            return [pointData];
-        }
-    }
-
-    function isHoverPointInFillElement(el) {
-        // Uses SVGElement.isPointInFill to accurately determine wether
-        // the hover point / cursor is contained in the fill, taking
-        // curved or jagged edges into account, which the Polygon-based
-        // approach does not.
-        if(!el) {
-            return false;
-        }
-        var svgElement = el.node();
-        try {
-            var domPoint = new DOMPoint(pt[0], pt[1]);
-            return svgElement.isPointInFill(domPoint);
-        } catch(TypeError) {
-            var svgPoint = svgElement.ownerSVGElement.createSVGPoint();
-            svgPoint.x = pt[0];
-            svgPoint.y = pt[1];
-            return svgElement.isPointInFill(svgPoint);
-        }
-    }
-
-    function getHoverLabelPosition(polygons) {
-        // Uses Polygon s to determine the left- and right-most x-coordinates
-        // of the subshape of the fill that contains the hover point / cursor.
-        // Doing this with the SVGElement directly is quite tricky, so this falls
-        // back to the existing relatively simple code, accepting some small inaccuracies
-        // of label positioning for curved/jagged edges.
-        var i;
-        var polygonsIn = [];
-        var xmin = Infinity;
-        var xmax = -Infinity;
-        var ymin = Infinity;
-        var ymax = -Infinity;
-        var yPos;
-
-        for(i = 0; i < polygons.length; i++) {
-            var polygon = polygons[i];
-            // This is not going to work right for curved or jagged edges, it will
-            // act as though they're straight.
-            if(polygon.contains(pt)) {
-                polygonsIn.push(polygon);
-                ymin = Math.min(ymin, polygon.ymin);
-                ymax = Math.max(ymax, polygon.ymax);
-            }
-        }
-
-        // The above found no polygon that contains the cursor, but we know that
-        // the cursor must be inside the fill as determined by the SVGElement
-        // (so we are probably close to a curved/jagged edge...).
-        if(polygonsIn.length === 0) {
-            return null;
-        }
-
-        // constrain ymin/max to the visible plot, so the label goes
-        // at the middle of the piece you can see
-        ymin = Math.max(ymin, 0);
-        ymax = Math.min(ymax, ya._length);
-
-        yPos = (ymin + ymax) / 2;
-
-        // find the overall left-most and right-most points of the
-        // polygon(s) we're inside at their combined vertical midpoint.
-        // This is where we will draw the hover label.
-        // Note that this might not be the vertical midpoint of the
-        // whole trace, if it's disjoint.
-        var j, pts, xAtYPos, x0, x1, y0, y1;
-        for(i = 0; i < polygonsIn.length; i++) {
-            pts = polygonsIn[i].pts;
-            for(j = 1; j < pts.length; j++) {
-                y0 = pts[j - 1][1];
-                y1 = pts[j][1];
-                if((y0 > yPos) !== (y1 >= yPos)) {
-                    x0 = pts[j - 1][0];
-                    x1 = pts[j][0];
-                    if(y1 - y0) {
-                        xAtYPos = x0 + (x1 - x0) * (yPos - y0) / (y1 - y0);
-                        xmin = Math.min(xmin, xAtYPos);
-                        xmax = Math.max(xmax, xAtYPos);
-                    }
+                    dy = (
+                        ypx >= Math.min(y0, y1) &&
+                        ypx <= Math.max(y0, y1)
+                    ) ? 0 : Infinity;
                 }
+
+                dxy = Math.sqrt(dx * dx + dy * dy);
+                closestId = ids[i];
             }
         }
+    } else {
+        for(i = ids.length - 1; i > -1; i--) {
+            k = ids[i];
+            ptx = x[k];
+            pty = y[k];
+            dx = xa.c2p(ptx) - xpx;
+            dy = ya.c2p(pty) - ypx;
 
-        // constrain xmin/max to the visible plot now too
-        xmin = Math.max(xmin, 0);
-        xmax = Math.min(xmax, xa._length);
-
-        return {
-            x0: xmin,
-            x1: xmax,
-            y0: yPos,
-            y1: yPos,
-        };
-    }
-
-    // even if hoveron is 'fills', only use it if we have a fill element too
-    if(hoveron.indexOf('fills') !== -1 && trace._fillElement) {
-        var inside = isHoverPointInFillElement(trace._fillElement) && !isHoverPointInFillElement(trace._fillExclusionElement);
-
-        if(inside) {
-            var hoverLabelCoords = getHoverLabelPosition(trace._polygons);
-
-            // getHoverLabelPosition may return null if the cursor / hover point is not contained
-            // in any of the trace's polygons, which can happen close to curved edges. in that
-            // case we fall back to displaying the hover label at the cursor position.
-            if(hoverLabelCoords === null) {
-                hoverLabelCoords = {
-                    x0: pt[0],
-                    x1: pt[0],
-                    y0: pt[1],
-                    y1: pt[1]
-                };
+            dist = Math.sqrt(dx * dx + dy * dy);
+            if(dist < minDist) {
+                minDist = dxy = dist;
+                closestId = k;
             }
-
-            // get only fill or line color for the hover color
-            var color = Color.defaultLine;
-            if(Color.opacity(trace.fillcolor)) color = trace.fillcolor;
-            else if(Color.opacity((trace.line || {}).color)) {
-                color = trace.line.color;
-            }
-
-            Lib.extendFlat(pointData, {
-                // never let a 2D override 1D type as closest point
-                // also: no spikeDistance, it's not allowed for fills
-                distance: pointData.maxHoverDistance,
-                x0: hoverLabelCoords.x0,
-                x1: hoverLabelCoords.x1,
-                y0: hoverLabelCoords.y0,
-                y1: hoverLabelCoords.y1,
-                color: color,
-                hovertemplate: false
-            });
-
-            delete pointData.index;
-
-            if(trace.text && !Lib.isArrayOrTypedArray(trace.text)) {
-                pointData.text = String(trace.text);
-            } else pointData.text = trace.name;
-
-            return [pointData];
         }
     }
-};
+
+    pointData.index = closestId;
+    pointData.distance = minDist;
+    pointData.dxy = dxy;
+
+    if(closestId === undefined) return [pointData];
+
+    return [calcHover(pointData, x, y, trace)];
+}
+
+function calcHover(pointData, x, y, trace) {
+    var xa = pointData.xa;
+    var ya = pointData.ya;
+    var minDist = pointData.distance;
+    var dxy = pointData.dxy;
+    var id = pointData.index;
+
+    // the closest data point
+    var di = {
+        pointNumber: id,
+        x: x[id],
+        y: y[id]
+    };
+
+    // that is single-item arrays_to_calcdata excerpt, since we are doing it for a single point and we don't have to do it beforehead for 1e6 points
+    di.tx = Lib.isArrayOrTypedArray(trace.text) ? trace.text[id] : trace.text;
+    di.htx = Array.isArray(trace.hovertext) ? trace.hovertext[id] : trace.hovertext;
+    di.data = Array.isArray(trace.customdata) ? trace.customdata[id] : trace.customdata;
+    di.tp = Array.isArray(trace.textposition) ? trace.textposition[id] : trace.textposition;
+
+    var font = trace.textfont;
+    if(font) {
+        di.ts = Lib.isArrayOrTypedArray(font.size) ? font.size[id] : font.size;
+        di.tc = Lib.isArrayOrTypedArray(font.color) ? font.color[id] : font.color;
+        di.tf = Array.isArray(font.family) ? font.family[id] : font.family;
+        di.tw = Array.isArray(font.weight) ? font.weight[id] : font.weight;
+        di.ty = Array.isArray(font.style) ? font.style[id] : font.style;
+        di.tv = Array.isArray(font.variant) ? font.variant[id] : font.variant;
+    }
+
+    var marker = trace.marker;
+    if(marker) {
+        di.ms = Lib.isArrayOrTypedArray(marker.size) ? marker.size[id] : marker.size;
+        di.mo = Lib.isArrayOrTypedArray(marker.opacity) ? marker.opacity[id] : marker.opacity;
+        di.mx = Lib.isArrayOrTypedArray(marker.symbol) ? marker.symbol[id] : marker.symbol;
+        di.ma = Lib.isArrayOrTypedArray(marker.angle) ? marker.angle[id] : marker.angle;
+        di.mc = Lib.isArrayOrTypedArray(marker.color) ? marker.color[id] : marker.color;
+    }
+
+    var line = marker && marker.line;
+    if(line) {
+        di.mlc = Array.isArray(line.color) ? line.color[id] : line.color;
+        di.mlw = Lib.isArrayOrTypedArray(line.width) ? line.width[id] : line.width;
+    }
+
+    var grad = marker && marker.gradient;
+    if(grad && grad.type !== 'none') {
+        di.mgt = Array.isArray(grad.type) ? grad.type[id] : grad.type;
+        di.mgc = Array.isArray(grad.color) ? grad.color[id] : grad.color;
+    }
+
+    var xp = xa.c2p(di.x, true);
+    var yp = ya.c2p(di.y, true);
+    var rad = di.mrc || 1;
+
+    var hoverlabel = trace.hoverlabel;
+
+    if(hoverlabel) {
+        di.hbg = Array.isArray(hoverlabel.bgcolor) ? hoverlabel.bgcolor[id] : hoverlabel.bgcolor;
+        di.hbc = Array.isArray(hoverlabel.bordercolor) ? hoverlabel.bordercolor[id] : hoverlabel.bordercolor;
+        di.hts = Lib.isArrayOrTypedArray(hoverlabel.font.size) ? hoverlabel.font.size[id] : hoverlabel.font.size;
+        di.htc = Array.isArray(hoverlabel.font.color) ? hoverlabel.font.color[id] : hoverlabel.font.color;
+        di.htf = Array.isArray(hoverlabel.font.family) ? hoverlabel.font.family[id] : hoverlabel.font.family;
+        di.hnl = Lib.isArrayOrTypedArray(hoverlabel.namelength) ? hoverlabel.namelength[id] : hoverlabel.namelength;
+    }
+    var hoverinfo = trace.hoverinfo;
+    if(hoverinfo) {
+        di.hi = Array.isArray(hoverinfo) ? hoverinfo[id] : hoverinfo;
+    }
+
+    var hovertemplate = trace.hovertemplate;
+    if(hovertemplate) {
+        di.ht = Array.isArray(hovertemplate) ? hovertemplate[id] : hovertemplate;
+    }
+
+    var fakeCd = {};
+    fakeCd[pointData.index] = di;
+
+    var origX = trace._origX;
+    var origY = trace._origY;
+
+    var pointData2 = Lib.extendFlat({}, pointData, {
+        color: getTraceColor(trace, di),
+
+        x0: xp - rad,
+        x1: xp + rad,
+        xLabelVal: origX ? origX[id] : di.x,
+
+        y0: yp - rad,
+        y1: yp + rad,
+        yLabelVal: origY ? origY[id] : di.y,
+
+        cd: fakeCd,
+        distance: minDist,
+        spikeDistance: dxy,
+
+        hovertemplate: di.ht
+    });
+
+    if(di.htx) pointData2.text = di.htx;
+    else if(di.tx) pointData2.text = di.tx;
+    else if(trace.text) pointData2.text = trace.text;
+
+    Lib.fillText(di, trace, pointData2);
+    Registry.getComponentMethod('errorbars', 'hoverInfo')(di, trace, pointData2);
+
+    return pointData2;
+}
