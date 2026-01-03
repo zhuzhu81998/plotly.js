@@ -29963,14 +29963,16 @@ var Plotly = (() => {
         cStyle.bottom = 0;
         cStyle.zIndex = 999999999;
         cStyle.background = "none";
-        document.body.appendChild(cover);
+        const fsEl = document.fullscreenElement;
+        (fsEl || document.body).appendChild(cover);
         return cover;
       }
       dragElement.coverSlip = coverSlip;
       function pointerOffset(e) {
+        const root = document.fullscreenElement || document.body;
         return mouseOffset(
           e.changedTouches ? e.changedTouches[0] : e,
-          document.body
+          root
         );
       }
     }
