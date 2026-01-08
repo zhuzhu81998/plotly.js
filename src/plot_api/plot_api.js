@@ -1717,6 +1717,12 @@ function relayout(gd, astr, val) {
     if (typeof astr === 'string') {
         aobj[astr] = val;
     } else if (Lib.isPlainObject(astr)) {
+        // delete custom properties from astr to avoid unwanted side effects
+        // add them later when emitting
+        if (astr.hasOwnProperty('custom')) {
+            var customProperties = astr.custom;
+            delete astr.custom;
+        }
         aobj = Lib.extendFlat({}, astr);
     } else {
         Lib.warn('Relayout fail.', astr, val);
@@ -1761,6 +1767,9 @@ function relayout(gd, astr, val) {
     if (!plotDone || !plotDone.then) plotDone = Promise.resolve(gd);
 
     return plotDone.then(function () {
+        if (customProperties !== undefined && customProperties !== null) {
+            specs.eventData.custom = customProperties;
+        }
         gd.emit('plotly_relayout', specs.eventData);
         return gd;
     });
