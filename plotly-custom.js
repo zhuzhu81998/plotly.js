@@ -45266,6 +45266,10 @@ var Plotly = (() => {
         if (typeof astr === "string") {
           aobj[astr] = val;
         } else if (Lib.isPlainObject(astr)) {
+          if (astr.hasOwnProperty("custom")) {
+            var customProperties = astr.custom;
+            delete astr.custom;
+          }
           aobj = Lib.extendFlat({}, astr);
         } else {
           Lib.warn("Relayout fail.", astr, val);
@@ -45294,6 +45298,9 @@ var Plotly = (() => {
         var plotDone = Lib.syncOrAsync(seq, gd);
         if (!plotDone || !plotDone.then) plotDone = Promise.resolve(gd);
         return plotDone.then(function() {
+          if (customProperties !== void 0 && customProperties !== null) {
+            specs.eventData.custom = customProperties;
+          }
           gd.emit("plotly_relayout", specs.eventData);
           return gd;
         });
