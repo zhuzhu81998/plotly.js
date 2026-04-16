@@ -30,6 +30,7 @@ var prepSelect = require('../../components/selections').prepSelect;
 var clearOutline = require('../../components/selections').clearOutline;
 var selectOnClick = require('../../components/selections').selectOnClick;
 var scaleZoom = require('./scale_zoom');
+var normalizeWheel = require('../../lib/normalize_wheel');
 
 var constants = require('./constants');
 var MINDRAG = constants.MINDRAG;
@@ -480,8 +481,9 @@ function makeDragBox(gd, plotinfo, x, y, w, h, ns, ew) {
 
         clearTimeout(redrawTimer);
 
-        var wheelDelta = -e.deltaY;
-        if(!isFinite(wheelDelta)) wheelDelta = e.wheelDelta / 10;
+        var normalizedWheel = normalizeWheel(e);
+        var wheelDelta = -normalizedWheel.pixelY;
+        if(!wheelDelta && isFinite(normalizedWheel.pixelX)) wheelDelta = -normalizedWheel.pixelX;
         if(!isFinite(wheelDelta)) {
             Lib.log('Did not find wheel motion attributes: ', e);
             return;
